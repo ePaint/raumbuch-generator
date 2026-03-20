@@ -3,23 +3,17 @@
 .SYNOPSIS
     Converts Excel room data to PDF specification sheets using a Word template.
 
-.DESCRIPTION
-    Reads room data from Excel, fills in a Word template using an external mapping table,
-    and exports each room as a PDF. Uses position caching for performance optimization.
-
 .PARAMETER ConfigPath
-    Path to the configuration JSON file. Defaults to config.json in script directory.
+    Path to the configuration file. Defaults to config.psd1 in script directory.
 
 .PARAMETER RoomCode
-    Optional. Process only a specific room by its code (e.g., "RT.017").
+    Process only a specific room by its code (e.g., "RT.017").
 
 .EXAMPLE
     .\RoomToPDF.ps1
-    Process all rooms using default config.json
 
 .EXAMPLE
     .\RoomToPDF.ps1 -RoomCode "RT.017"
-    Process only room RT.017
 #>
 
 [CmdletBinding()]
@@ -30,8 +24,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-
-#region Functions
 
 function Load-Configuration {
     param([string]$Path)
@@ -46,13 +38,11 @@ function Load-Configuration {
 
     $config = Import-PowerShellDataFile -Path $Path
 
-    # Resolve relative paths to absolute
     $config.DataFile = Resolve-ConfigPath $config.DataFile
     $config.TemplateFile = Resolve-ConfigPath $config.TemplateFile
     $config.MappingFile = Resolve-ConfigPath $config.MappingFile
     $config.OutputFolder = Resolve-ConfigPath $config.OutputFolder
 
-    # Validate files exist
     if (-not (Test-Path $config.DataFile)) {
         throw "Data file not found: $($config.DataFile)"
     }
@@ -63,7 +53,6 @@ function Load-Configuration {
         throw "Mapping file not found: $($config.MappingFile)"
     }
 
-    # Create timestamped output subfolder
     $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
     $config.OutputFolder = Join-Path (Resolve-ConfigPath $config.OutputFolder) $timestamp
     New-Item -ItemType Directory -Path $config.OutputFolder -Force | Out-Null
@@ -115,6 +104,8 @@ function Read-RoomData {
 
 function Normalize-Text {
     param([string]$Text)
+
+    # Handle German umlauts and encoding inconsistencies between Excel and Word
     $result = $Text.ToLower().Trim()
     $result = $result -replace 'ä', 'ae'
     $result = $result -replace 'ö', 'oe'
@@ -169,6 +160,8 @@ function Build-LabelPositionCache {
 
                     if ($labelsToFind.ContainsKey($normalizedCell)) {
                         $originalLabel = $labelsToFind[$normalizedCell]
+
+                        # Bemerkungen fields have their value in the row below
                         $isBemerkungen = $originalLabel -like "*Bemerkungen*"
 
                         if ($isBemerkungen) {
@@ -271,7 +264,6 @@ function Process-SingleRoom {
             $cell = $null
             $normalizedLabel = Normalize-Text $mapping.WordLabel
 
-            # Use cached position for direct access (FAST)
             if ($PositionCache.ContainsKey($normalizedLabel)) {
                 $pos = $PositionCache[$normalizedLabel]
                 try {
@@ -290,8 +282,7 @@ function Process-SingleRoom {
             Set-CellValue -Cell $cell -Value $excelValue -UnitSuffix $mapping.UnitSuffix | Out-Null
         }
 
-        # Export as PDF (wdExportFormatPDF = 17)
-        $doc.ExportAsFixedFormat($OutputPath, 17, $false, 0, 0, 0, 0, 0, $false, $false, 0, $true, $true, $false)
+        $doc.ExportAsFixedFormat($OutputPath, 17) # wdExportFormatPDF
         $success = $true
     }
     catch {
@@ -322,25 +313,19 @@ function Release-ComObjects {
     [System.GC]::WaitForPendingFinalizers()
 }
 
-#endregion
-
-#region Main
-
 $word = $null
 
 try {
     Write-Host "=" * 60 -ForegroundColor Yellow
-    Write-Host "Room Database to PDF Converter (Cache Optimized)" -ForegroundColor Yellow
+    Write-Host "Room Database to PDF Converter" -ForegroundColor Yellow
     Write-Host "=" * 60 -ForegroundColor Yellow
     Write-Host ""
 
-    # Check for ImportExcel module
     if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
         throw "ImportExcel module is required. Install with: Install-Module ImportExcel -Scope CurrentUser"
     }
     Import-Module ImportExcel
 
-    # Load configuration
     Write-Host "Loading configuration..." -ForegroundColor Cyan
     $config = Load-Configuration -Path $ConfigPath
     Write-Host "  Data file: $($config.DataFile)"
@@ -348,12 +333,10 @@ try {
     Write-Host "  Output: $($config.OutputFolder)"
     Write-Host ""
 
-    # Read data
     $mappings = Read-MappingTable -Path $config.MappingFile
     $roomData = Read-RoomData -Path $config.DataFile -RoomCodeColumn $config.RoomCodeColumn
     Write-Host ""
 
-    # Filter by room code if specified
     if (-not [string]::IsNullOrEmpty($RoomCode)) {
         $roomData = $roomData | Where-Object { $_.$($config.RoomCodeColumn) -eq $RoomCode }
         if ($roomData.Count -eq 0) {
@@ -363,20 +346,17 @@ try {
         Write-Host ""
     }
 
-    # Build position cache (major optimization)
     $startTotal = Get-Date
     $positionCache = Build-LabelPositionCache -TemplatePath $config.TemplateFile -Mappings $mappings
     $cacheTime = (Get-Date) - $startTotal
     Write-Host "  Cache built in $([math]::Round($cacheTime.TotalSeconds, 1))s" -ForegroundColor Cyan
     Write-Host ""
 
-    # Initialize Word (single instance for all rooms)
     Write-Host "Starting Word..." -ForegroundColor Cyan
     $word = New-Object -ComObject Word.Application
     $word.Visible = $false
     $word.DisplayAlerts = 0
 
-    # Process rooms
     $totalRooms = @($roomData).Count
     $successCount = 0
     $failCount = 0
@@ -453,5 +433,3 @@ finally {
     Release-ComObjects -WordApp $word
     Write-Host "Done." -ForegroundColor Green
 }
-
-#endregion
