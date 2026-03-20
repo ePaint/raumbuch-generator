@@ -2,6 +2,10 @@
 
 Converts Excel room data to PDF specification sheets using a Word template.
 
+## Download
+
+Get the latest release: [**Releases**](https://github.com/ePaint/raumbuch-generator/releases)
+
 ## Requirements
 
 - Windows
