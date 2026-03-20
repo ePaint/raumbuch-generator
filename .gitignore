@@ -1,0 +1,26 @@
+# Output (generated PDFs)
+Output/
+
+# Input data (user-specific)
+Input/
+
+# Temporary/one-time files
+temp/
+
+# Claude Code
+.claude/
+
+# Windows
+Thumbs.db
+Desktop.ini
+~$*.docx
+~$*.xlsx
+*.tmp
+
+# Word temp files
+~*.doc
+~*.docx
+
+# Excel temp files
+~*.xls
+~*.xlsx
