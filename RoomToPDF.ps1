@@ -104,20 +104,7 @@ function Read-RoomData {
 
 function Normalize-Text {
     param([string]$Text)
-
-    # Handle German umlauts and encoding inconsistencies between Excel and Word
-    $result = $Text.ToLower().Trim()
-    $result = $result -replace 'ä', 'ae'
-    $result = $result -replace 'ö', 'oe'
-    $result = $result -replace 'ü', 'ue'
-    $result = $result -replace 'ß', 'ss'
-    $result = $result -replace '\xc3\xa4', 'ae'
-    $result = $result -replace '\xc3\xb6', 'oe'
-    $result = $result -replace '\xc3\xbc', 'ue'
-    $result = $result -replace '\ufffd', ''
-    $result = $result -replace '\?', ''
-    $result = $result -replace '[^\x20-\x7E]', ''
-    return $result
+    return $Text.ToLower().Trim()
 }
 
 function Build-LabelPositionCache {
