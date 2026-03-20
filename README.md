@@ -71,15 +71,16 @@ Edit `config.psd1`:
 
 The `MappingTable.xlsx` file defines how Excel columns map to Word template labels:
 
-| ExcelColumn | WordLabel | UnitSuffix |
-|-------------|-----------|------------|
-| `Heizung - min. Raumtemperatur Winter` | `min. Raumtemperatur Winter` | `°C` |
-| `Beleuchtung - Grundbeleuchtung` | `Grundbeleuchtung nach SIA 387/4` | `lux` |
-| `Architektur - max. Belegung` | `max. Belegung` | |
+| ExcelColumn | WordLabel |
+|-------------|-----------|
+| `Heizung - min. Raumtemperatur Winter` | `min. Raumtemperatur Winter` |
+| `Beleuchtung - Grundbeleuchtung` | `Grundbeleuchtung nach SIA 387/4` |
+| `Architektur - max. Belegung` | `max. Belegung` |
 
 - **ExcelColumn**: Exact column header from your Excel file
 - **WordLabel**: Label text in the Word template (matched case-insensitively)
-- **UnitSuffix**: Optional unit to append (e.g., `°C`, `lux`, `%`)
+
+Units (°C, lux, %, etc.) are automatically detected from the template cells.
 
 ## Usage
 

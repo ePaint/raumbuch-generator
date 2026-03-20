@@ -83,7 +83,6 @@ function Read-MappingTable {
         $result += [PSCustomObject]@{
             ExcelColumn = $row.ExcelColumn.Trim()
             WordLabel = $row.WordLabel.Trim()
-            UnitSuffix = if ($row.UnitSuffix) { $row.UnitSuffix.Trim() } else { "" }
         }
     }
 
@@ -195,8 +194,7 @@ function Build-LabelPositionCache {
 function Set-CellValue {
     param(
         [object]$Cell,
-        [string]$Value,
-        [string]$UnitSuffix
+        [string]$Value
     )
 
     if ($null -eq $Cell) { return $false }
@@ -208,10 +206,7 @@ function Set-CellValue {
     $existingText = $existingText.Trim()
 
     $finalValue = $Value
-    if (-not [string]::IsNullOrEmpty($UnitSuffix)) {
-        $finalValue = "$Value $UnitSuffix"
-    }
-    elseif ($existingText -match '^\s*(°C|lux|%|Stk\.|m²|m³|Pa|W|W/m²|kW|l/s|m³/h)$') {
+    if ($existingText -match '^\s*(°C|lux|%|Stk\.|m²|m³|Pa|W|W/m²|kW|l/s|m³/h)$') {
         $finalValue = "$Value $existingText"
     }
 
@@ -262,7 +257,7 @@ function Process-SingleRoom {
                 continue
             }
 
-            Set-CellValue -Cell $cell -Value $excelValue -UnitSuffix $mapping.UnitSuffix | Out-Null
+            Set-CellValue -Cell $cell -Value $excelValue | Out-Null
         }
 
         $doc.ExportAsFixedFormat($OutputPath, 17) # wdExportFormatPDF
