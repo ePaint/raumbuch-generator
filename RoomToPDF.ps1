@@ -149,6 +149,7 @@ function Build-LabelPositionCache {
         foreach ($table in $doc.Tables) {
             $tableIndex++
             $rowCount = $table.Rows.Count
+            $isSingleColumn = $table.Columns.Count -eq 1
 
             for ($row = 1; $row -le $rowCount; $row++) {
                 try {
@@ -159,12 +160,7 @@ function Build-LabelPositionCache {
                     $normalizedCell = Normalize-Text $cellText
 
                     if ($labelsToFind.ContainsKey($normalizedCell)) {
-                        $originalLabel = $labelsToFind[$normalizedCell]
-
-                        # Bemerkungen fields have their value in the row below
-                        $isBemerkungen = $originalLabel -like "*Bemerkungen*"
-
-                        if ($isBemerkungen) {
+                        if ($isSingleColumn) {
                             $cache[$normalizedCell] = @{
                                 TableIndex = $tableIndex
                                 Row = $row + 1
