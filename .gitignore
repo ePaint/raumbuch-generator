@@ -1,8 +1,10 @@
-# Output (generated PDFs)
-Output/
+# Output (generated PDFs, keep folder structure)
+Output/*
+!Output/.gitkeep
 
-# Input data (user-specific)
-Input/
+# Input data (user-specific, keep folder structure)
+Input/*
+!Input/.gitkeep
 
 # Temporary/one-time files
 temp/
