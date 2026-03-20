@@ -26,3 +26,4 @@ Desktop.ini
 # Excel temp files
 ~*.xls
 ~*.xlsx
+dist/
