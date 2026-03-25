@@ -7,13 +7,16 @@
     Path to the configuration file. Defaults to config.psd1 in script directory.
 
 .PARAMETER RoomCode
-    Process only a specific room by its code (e.g., "RT.017").
+    Process specific room(s) by code. Comma-separated for multiple (e.g., "RT.017,RT.018").
 
 .EXAMPLE
     .\RoomToPDF.ps1
 
 .EXAMPLE
     .\RoomToPDF.ps1 -RoomCode "RT.017"
+
+.EXAMPLE
+    .\RoomToPDF.ps1 -RoomCode "RT.001,RT.017,RT.187"
 #>
 
 [CmdletBinding()]
@@ -316,11 +319,12 @@ try {
     Write-Host ""
 
     if (-not [string]::IsNullOrEmpty($RoomCode)) {
-        $roomData = $roomData | Where-Object { $_.$($config.RoomCodeColumn) -eq $RoomCode }
+        $roomCodes = $RoomCode -split ',' | ForEach-Object { $_.Trim() }
+        $roomData = $roomData | Where-Object { $_.$($config.RoomCodeColumn) -in $roomCodes }
         if ($roomData.Count -eq 0) {
-            throw "Room not found: $RoomCode"
+            throw "Room(s) not found: $RoomCode"
         }
-        Write-Host "Filtering to room: $RoomCode" -ForegroundColor Cyan
+        Write-Host "Filtering to $($roomCodes.Count) room(s): $($roomCodes -join ', ')" -ForegroundColor Cyan
         Write-Host ""
     }
 

@@ -86,6 +86,19 @@ The `MappingTable.xlsx` file defines how Excel columns map to Word template labe
 
 Units (°C, lux, %, etc.) are automatically detected from the template cells.
 
+### Updating the Mapping Table
+
+When the Word template or Excel data changes, run:
+```powershell
+.\Update-MappingTable.ps1
+```
+
+This will:
+- Scan the Word template for all labels
+- Keep existing mappings that still exist
+- Add new labels (with empty ExcelColumn for manual mapping)
+- Remove mappings for labels no longer in template
+
 ## Usage
 
 Process all rooms:
@@ -96,6 +109,11 @@ Process all rooms:
 Process a single room:
 ```powershell
 .\RoomToPDF.ps1 -RoomCode "RT.017"
+```
+
+Process multiple specific rooms:
+```powershell
+.\RoomToPDF.ps1 -RoomCode "RT.001,RT.017,RT.187"
 ```
 
 Use a different config file:
