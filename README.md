@@ -1,51 +1,52 @@
 # Raumbuch Generator
 
-Converts Excel room data to PDF specification sheets using a Word template.
+Generates PDF specification sheets from room data using Word templates with placeholders.
 
-## Download
+## How It Works
 
-Get the latest release: [**Releases**](https://github.com/ePaint/raumbuch-generator/releases)
+1. You create a Word template with placeholders like `<<room_func_no>>`, `<<name>>`, `<<programmed_area>>`
+2. The script loads room data from Excel or an API
+3. For each room, it replaces placeholders with actual values and exports to PDF
 
 ## Requirements
 
-- Windows
-- Microsoft Word (installed)
-- PowerShell 5.1 or later
+- Windows with Microsoft Word installed
+- PowerShell 5.1+
 - [ImportExcel](https://github.com/dfinke/ImportExcel) module
 
-## Installation
+## Quick Start
 
-1. Clone this repository:
-   ```powershell
-   git clone https://github.com/ePaint/raumbuch-generator.git
-   cd raumbuch-generator
-   ```
+```powershell
+# Install dependency
+Install-Module ImportExcel -Scope CurrentUser
 
-2. Install the ImportExcel module:
-   ```powershell
-   Install-Module ImportExcel -Scope CurrentUser
-   ```
+# Run with defaults
+.\RoomToPDF.ps1
 
-3. Place your input files in the `Input/` folder:
-   - Your Excel data file (e.g., `ZB3.0.xlsx`)
-   - Your Word template (e.g., `Raumbuch_Vorlage.docx`)
+# Process specific rooms
+.\RoomToPDF.ps1 -RoomCode "RT.001,RT.017"
 
-4. Update `config.psd1` to match your file names.
+# Use API instead of Excel
+.\RoomToPDF.ps1 -Source API
+
+# Use a different template
+.\RoomToPDF.ps1 -Template "Input/my-template.docx"
+```
 
 ## Project Structure
 
 ```
 raumbuch-generator/
-├── RoomToPDF.ps1        # Main script
-├── config.psd1          # Configuration
-├── MappingTable.xlsx    # Field mappings (Excel column → Word label)
-├── Input/               # Your data files
-│   ├── *.xlsx           # Room data spreadsheet
-│   └── *.docx           # Word template
-└── Output/              # Generated PDFs (timestamped folders)
-    └── 2026-03-20_19-08-29/
+├── RoomToPDF.ps1           # Main script
+├── config.psd1             # Configuration
+├── api-key.txt             # API key (not in repo)
+├── Input/
+│   ├── sample-template.docx  # Example template
+│   ├── sample-data.xlsx      # Example data
+│   └── ...                   # Your files
+└── Output/
+    └── 2026-04-04_16-00-00/
         ├── RT.001.pdf
-        ├── RT.002.pdf
         └── ...
 ```
 
@@ -55,113 +56,98 @@ Edit `config.psd1`:
 
 ```powershell
 @{
-    DataFile       = 'Input/ZB3.0.xlsx'              # Excel file with room data
-    TemplateFile   = 'Input/Raumbuch_Vorlage.docx'   # Word template
-    MappingFile    = 'MappingTable.xlsx'             # Field mapping table
-    OutputFolder   = 'Output'                        # Output directory
-    RoomCodeColumn = 'Code'                          # Column name for room codes
+    TemplateFile = 'Input/template.docx'
+    OutputFolder = 'Output'
+    DataSource   = 'Excel'   # or 'API'
+
+    Excel = @{
+        DataFile       = 'Input/data.xlsx'
+        RoomCodeColumn = 'Code'
+    }
+
+    API = @{
+        EndpointFile  = 'api-endpoint.txt'
+        KeyFile       = 'api-key.txt'
+        RoomCodeField = 'room_func_no'
+    }
+
+    # Value replacements (case-insensitive)
+    ValueMap = @{
+        'true'  = 'ja'
+        'false' = 'nein'
+    }
 }
 ```
 
-| Setting | Description |
-|---------|-------------|
-| `DataFile` | Path to your Excel file containing room data (one row per room) |
-| `TemplateFile` | Path to the Word template with tables to fill |
-| `MappingFile` | Path to the mapping table that links Excel columns to Word labels |
-| `OutputFolder` | Where PDFs will be saved (in timestamped subfolders) |
-| `RoomCodeColumn` | Name of the Excel column containing room identifiers |
+## Template Format
 
-## Mapping Table
+Use `<<fieldname>>` placeholders anywhere in your Word document:
 
-The `MappingTable.xlsx` file defines how Excel columns map to Word template labels:
+```
+Room Specification Sheet
 
-| ExcelColumn | WordLabel |
-|-------------|-----------|
-| `Heizung - min. Raumtemperatur Winter` | `min. Raumtemperatur Winter` |
-| `Beleuchtung - Grundbeleuchtung` | `Grundbeleuchtung nach SIA 387/4` |
-| `Architektur - max. Belegung` | `max. Belegung` |
+Code: <<room_func_no>>
+Name: <<name>>
+Area: <<programmed_area>> m²
 
-- **ExcelColumn**: Exact column header from your Excel file
-- **WordLabel**: Label text in the Word template (matched case-insensitively)
-
-Units (°C, lux, %, etc.) are automatically detected from the template cells.
-
-### Updating the Mapping Table
-
-When the Word template or Excel data changes, run:
-```powershell
-.\Update-MappingTable.ps1
+Description:
+<<description>>
 ```
 
-This will:
-- Scan the Word template for all labels
-- Keep existing mappings that still exist
-- Add new labels (with empty ExcelColumn for manual mapping)
-- Remove mappings for labels no longer in template
+Placeholder names must match the column headers in your Excel file or field names from the API.
 
-## Usage
+### Formatting
 
-Process all rooms:
+- Placeholders can be inside tables, paragraphs, headers, anywhere
+- Text formatting (bold, colors, fonts) is preserved
+- Values are mapped via `ValueMap` in config (e.g., `true` → `ja`)
+- Values over 255 characters are truncated (Word limitation)
+
+## Command Line Options
+
+| Parameter | Description |
+|-----------|-------------|
+| `-RoomCode` | Process specific room(s), comma-separated |
+| `-Source` | Data source: `Excel` or `API` (overrides config) |
+| `-Template` | Template file path (overrides config) |
+| `-ConfigPath` | Use a different config file |
+
+Examples:
+
 ```powershell
+# All rooms from Excel
 .\RoomToPDF.ps1
+
+# Single room from API
+.\RoomToPDF.ps1 -RoomCode "RT.001" -Source API
+
+# Multiple rooms with custom template
+.\RoomToPDF.ps1 -RoomCode "RT.001,RT.002" -Template "Input/simple.docx"
 ```
 
-Process a single room:
-```powershell
-.\RoomToPDF.ps1 -RoomCode "RT.017"
-```
+## Data Sources
 
-Process multiple specific rooms:
-```powershell
-.\RoomToPDF.ps1 -RoomCode "RT.001,RT.017,RT.187"
-```
+### Excel
 
-Use a different config file:
-```powershell
-.\RoomToPDF.ps1 -ConfigPath "path\to\other-config.psd1"
-```
+Set `DataSource = 'Excel'` in config. The script reads all columns from the Excel file. Each column header becomes a placeholder name.
+
+### API (dRofus)
+
+Set `DataSource = 'API'` in config. Requires:
+- `api-key.txt` with your API key
+- Endpoint URL in a file (configured via `EndpointFile`)
 
 ## Output
 
-Each run creates a timestamped folder inside `Output/`:
+Each run creates a timestamped folder in `Output/`:
 
 ```
 Output/
-└── 2026-03-20_19-08-29/
+└── 2026-04-04_16-00-00/
     ├── RT.001.pdf
     ├── RT.002.pdf
-    ├── RT.003.pdf
     └── ...
 ```
-
-Previous runs are preserved.
-
-## Word Template Requirements
-
-The Word template must use tables with this structure:
-
-**Two-column tables** (most fields):
-```
-┌─────────────────────────┬─────────┐
-│ max. Belegung           │ [value] │
-│ Tageslicht direkt       │ [value] │
-└─────────────────────────┴─────────┘
-```
-- Column 1: Label
-- Column 2: Value (filled by script)
-
-**Single-column tables** (remarks/notes):
-```
-┌─────────────────────────┐
-│ Beleuchtung Bemerkungen │
-├─────────────────────────┤
-│ [value]                 │
-└─────────────────────────┘
-```
-- Row 1: Label
-- Row 2: Value (filled by script)
-
-Labels are matched case-insensitively against the `WordLabel` column in the mapping table.
 
 ## Troubleshooting
 
@@ -170,23 +156,20 @@ Labels are matched case-insensitively against the `WordLabel` column in the mapp
 Install-Module ImportExcel -Scope CurrentUser
 ```
 
-**"Data file not found" / "Template file not found"**
-- Check that the paths in `config.psd1` are correct
-- Paths are relative to the script directory
+**"Template file not found"**
+- Check paths in config.psd1 (relative to script directory)
 
-**"Warning: X labels not found in template"**
-- Some `WordLabel` values in `MappingTable.xlsx` don't match any label in the Word template
-- Check for typos or extra spaces
+**Placeholder not replaced**
+- Check that placeholder name exactly matches field/column name
+- Placeholder format: `<<fieldname>>` with double angle brackets
 
 **Word process hangs**
-- The script cleans up Word automatically
-- If Word hangs, end `WINWORD.EXE` in Task Manager
+- End `WINWORD.EXE` in Task Manager
+- The script normally cleans up automatically
 
 ## Performance
 
-The script uses position caching for fast processing:
-- ~1-2 seconds per room
-- 181 rooms in ~4 minutes
+Typical processing time: 1-3 seconds per room depending on template complexity.
 
 ## License
 

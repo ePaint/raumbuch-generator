@@ -12,11 +12,20 @@
 .PARAMETER Source
     Data source: 'Excel' or 'API'. Overrides config.psd1 setting.
 
+.PARAMETER Template
+    Path to Word template file. Overrides config.psd1 setting.
+
+.PARAMETER ExcelFile
+    Path to Excel data file. Overrides config.psd1 setting.
+
 .EXAMPLE
     .\RoomToPDF.ps1
 
 .EXAMPLE
     .\RoomToPDF.ps1 -Source API
+
+.EXAMPLE
+    .\RoomToPDF.ps1 -Template "Input/my-template.docx"
 
 .EXAMPLE
     .\RoomToPDF.ps1 -RoomCode "RT.017"
@@ -30,7 +39,9 @@ param(
     [string]$ConfigPath = "",
     [string]$RoomCode = "",
     [ValidateSet('Excel', 'API')]
-    [string]$Source = ""
+    [string]$Source = "",
+    [string]$Template = "",
+    [string]$ExcelFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,7 +50,9 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 function Load-Configuration {
     param(
         [string]$Path,
-        [string]$SourceOverride = ""
+        [string]$SourceOverride = "",
+        [string]$TemplateOverride = "",
+        [string]$ExcelFileOverride = ""
     )
 
     if ([string]::IsNullOrEmpty($Path)) {
@@ -52,28 +65,31 @@ function Load-Configuration {
 
     $config = Import-PowerShellDataFile -Path $Path
 
-    $config.TemplateFile = Resolve-ConfigPath $config.TemplateFile
+    # Template override
+    if ($TemplateOverride) {
+        $config.TemplateFile = Resolve-ConfigPath $TemplateOverride
+    } else {
+        $config.TemplateFile = Resolve-ConfigPath $config.TemplateFile
+    }
     $config.OutputFolder = Resolve-ConfigPath $config.OutputFolder
 
     # Parameter overrides config, config defaults to Excel
     $dataSource = if ($SourceOverride) { $SourceOverride } elseif ($config.DataSource) { $config.DataSource } else { 'Excel' }
     $config.DataSource = $dataSource
 
-    if ($dataSource -eq 'API') {
-        $config.MappingFile = Resolve-ConfigPath $config.API.MappingFile
-    } else {
-        $config.Excel.DataFile = Resolve-ConfigPath $config.Excel.DataFile
-        $config.MappingFile = Resolve-ConfigPath $config.Excel.MappingFile
+    if ($dataSource -eq 'Excel') {
+        if ($ExcelFileOverride) {
+            $config.Excel.DataFile = Resolve-ConfigPath $ExcelFileOverride
+        } else {
+            $config.Excel.DataFile = Resolve-ConfigPath $config.Excel.DataFile
+        }
+        if (-not (Test-Path $config.Excel.DataFile)) {
+            throw "Data file not found: $($config.Excel.DataFile)"
+        }
     }
 
-    if ($dataSource -eq 'Excel' -and -not (Test-Path $config.Excel.DataFile)) {
-        throw "Data file not found: $($config.Excel.DataFile)"
-    }
     if (-not (Test-Path $config.TemplateFile)) {
         throw "Template file not found: $($config.TemplateFile)"
-    }
-    if (-not (Test-Path $config.MappingFile)) {
-        throw "Mapping file not found: $($config.MappingFile)"
     }
 
     $timestamp = Get-Date -Format "yyyy-MM-dd_HH-mm-ss"
@@ -90,31 +106,6 @@ function Resolve-ConfigPath {
         return $Path
     }
     return Join-Path $scriptDir $Path
-}
-
-function Read-MappingTable {
-    param(
-        [string]$Path,
-        [string]$DataColumnName = 'ExcelColumn'
-    )
-
-    $mappings = Import-Excel -Path $Path
-    $result = @()
-
-    foreach ($row in $mappings) {
-        $dataValue = $row.$DataColumnName
-        if ([string]::IsNullOrWhiteSpace($dataValue)) {
-            continue
-        }
-
-        $result += [PSCustomObject]@{
-            DataColumn = $dataValue.Trim()
-            WordLabel = $row.WordLabel.Trim()
-        }
-    }
-
-    Write-Host "Loaded $($result.Count) mappings from mapping table" -ForegroundColor Cyan
-    return $result
 }
 
 function Read-RoomData {
@@ -168,170 +159,55 @@ function Read-RoomDataFromAPI {
     return $response
 }
 
-function Normalize-Text {
-    param([string]$Text)
-    return $Text.ToLower().Trim()
-}
-
-function Build-LabelPositionCache {
-    param(
-        [string]$TemplatePath,
-        [array]$Mappings
-    )
-
-    $word = $null
-    $doc = $null
-    $cache = @{}
-
-    try {
-        Write-Host "Building label position cache..." -ForegroundColor Cyan
-
-        $word = New-Object -ComObject Word.Application
-        $word.Visible = $false
-        $word.DisplayAlerts = 0
-
-        $doc = $word.Documents.Open($TemplatePath, $false, $true)
-
-        $labelsToFind = @{}
-        foreach ($mapping in $Mappings) {
-            $normalizedLabel = Normalize-Text $mapping.WordLabel
-            $labelsToFind[$normalizedLabel] = $mapping.WordLabel
-        }
-
-        $tableIndex = 0
-        foreach ($table in $doc.Tables) {
-            $tableIndex++
-            $rowCount = $table.Rows.Count
-            $isSingleColumn = $table.Columns.Count -eq 1
-
-            for ($row = 1; $row -le $rowCount; $row++) {
-                try {
-                    $cellText = $table.Cell($row, 1).Range.Text
-                    $cellText = $cellText -replace "`r`a", "" -replace "`r", "" -replace "`a", ""
-                    $cellText = $cellText.Trim()
-
-                    $normalizedCell = Normalize-Text $cellText
-
-                    if ($labelsToFind.ContainsKey($normalizedCell)) {
-                        if ($isSingleColumn) {
-                            $cache[$normalizedCell] = @{
-                                TableIndex = $tableIndex
-                                Row = $row + 1
-                                Col = 1
-                            }
-                        }
-                        else {
-                            $cache[$normalizedCell] = @{
-                                TableIndex = $tableIndex
-                                Row = $row
-                                Col = 2
-                            }
-                        }
-                    }
-                }
-                catch {
-                    continue
-                }
-            }
-        }
-
-        Write-Host "  Cached $($cache.Count) label positions from $tableIndex tables" -ForegroundColor Green
-
-        $notFound = $labelsToFind.Keys | Where-Object { -not $cache.ContainsKey($_) }
-        if ($notFound.Count -gt 0) {
-            Write-Host "  Warning: $($notFound.Count) labels not found in template" -ForegroundColor Yellow
-        }
-
-        return $cache
-    }
-    finally {
-        if ($null -ne $doc) {
-            $doc.Close([ref]$false)
-            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null
-        }
-        if ($null -ne $word) {
-            $word.Quit()
-            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($word) | Out-Null
-        }
-        [System.GC]::Collect()
-        [System.GC]::WaitForPendingFinalizers()
-    }
-}
-
-function Set-CellValue {
-    param(
-        [object]$Cell,
-        [string]$Value
-    )
-
-    if ($null -eq $Cell) { return $false }
-
-    if ($Value -eq "TRUE" -or $Value -eq "True") { $Value = "ja" }
-    elseif ($Value -eq "FALSE" -or $Value -eq "False") { $Value = "nein" }
-
-    $existingText = $Cell.Range.Text -replace "`r`a", "" -replace "`r", "" -replace "`a", ""
-    $existingText = $existingText.Trim()
-
-    $finalValue = $Value
-    if ($existingText -match '^\s*(°C|lux|%|Stk\.|m²|m³|Pa|W|W/m²|kW|l/s|m³/h)$') {
-        $finalValue = "$Value $existingText"
-    }
-
-    $Cell.Range.Text = $finalValue
-    return $true
-}
-
 function Process-SingleRoom {
     param(
         [object]$WordApp,
         [string]$TemplatePath,
         [PSCustomObject]$RoomData,
-        [array]$Mappings,
         [string]$OutputPath,
-        [string]$RoomCode,
-        [hashtable]$PositionCache
+        [hashtable]$ValueMap
     )
 
     $doc = $null
     $success = $false
-    $warnings = @()
+    $replacedCount = 0
 
     try {
-        $doc = $WordApp.Documents.Open($TemplatePath, $false, $true)
+        $doc = $WordApp.Documents.Open($TemplatePath, $false, $false)
 
-        foreach ($mapping in $Mappings) {
-            $excelValue = $RoomData.($mapping.DataColumn)
+        foreach ($prop in $RoomData.PSObject.Properties) {
+            $placeholder = "<<$($prop.Name)>>"
+            $value = if ($null -ne $prop.Value) { $prop.Value.ToString() } else { "" }
 
-            if ([string]::IsNullOrWhiteSpace($excelValue)) {
-                continue
+            if ([string]::IsNullOrWhiteSpace($value)) {
+                $value = ""
             }
 
-            $cell = $null
-            $normalizedLabel = Normalize-Text $mapping.WordLabel
-
-            if ($PositionCache.ContainsKey($normalizedLabel)) {
-                $pos = $PositionCache[$normalizedLabel]
-                try {
-                    $cell = $doc.Tables.Item($pos.TableIndex).Cell($pos.Row, $pos.Col)
-                }
-                catch {
-                    $warnings += "Cache miss: $($mapping.WordLabel)"
+            if ($ValueMap -and $ValueMap.Count -gt 0 -and $value.Length -gt 0) {
+                $lowerValue = $value.ToLower()
+                if ($ValueMap.ContainsKey($lowerValue)) {
+                    $value = $ValueMap[$lowerValue]
                 }
             }
 
-            if ($null -eq $cell) {
-                $warnings += "Label not found: $($mapping.WordLabel)"
-                continue
+            if ($value.Length -gt 255) {
+                $value = $value.Substring(0, 252) + "..."
             }
 
-            Set-CellValue -Cell $cell -Value $excelValue | Out-Null
+            $find = $doc.Content.Find
+            $find.ClearFormatting()
+            $find.Replacement.ClearFormatting()
+
+            if ($find.Execute($placeholder, $false, $false, $false, $false, $false, $true, 1, $false, $value, 2)) {
+                $replacedCount++
+            }
         }
 
-        $doc.ExportAsFixedFormat($OutputPath, 17) # wdExportFormatPDF
+        $doc.ExportAsFixedFormat($OutputPath, 17)
         $success = $true
     }
     catch {
-        $warnings += "Error: $_"
+        Write-Host " Error: $_" -ForegroundColor Red
     }
     finally {
         if ($null -ne $doc) {
@@ -340,7 +216,7 @@ function Process-SingleRoom {
         }
     }
 
-    return @{ Success = $success; Warnings = $warnings }
+    return @{ Success = $success; ReplacedCount = $replacedCount }
 }
 
 function Release-ComObjects {
@@ -372,7 +248,7 @@ try {
     Import-Module ImportExcel
 
     Write-Host "Loading configuration..." -ForegroundColor Cyan
-    $config = Load-Configuration -Path $ConfigPath -SourceOverride $Source
+    $config = Load-Configuration -Path $ConfigPath -SourceOverride $Source -TemplateOverride $Template -ExcelFileOverride $ExcelFile
     $dataSource = if ($config.DataSource) { $config.DataSource } else { 'Excel' }
     Write-Host "  Data source: $dataSource"
     if ($dataSource -eq 'API') {
@@ -381,14 +257,10 @@ try {
         Write-Host "  Data file: $($config.Excel.DataFile)"
     }
     Write-Host "  Template: $($config.TemplateFile)"
-    Write-Host "  Mapping: $($config.MappingFile)"
     Write-Host "  Output: $($config.OutputFolder)"
     Write-Host ""
 
     $dataSource = $config.DataSource
-    $dataColumnName = if ($dataSource -eq 'API') { 'APIField' } else { 'ExcelColumn' }
-    $mappings = Read-MappingTable -Path $config.MappingFile -DataColumnName $dataColumnName
-
     if ($dataSource -eq 'API') {
         $roomData = Read-RoomDataFromAPI -APIConfig $config.API -ScriptDir $scriptDir
         $roomCodeField = $config.API.RoomCodeField
@@ -409,10 +281,6 @@ try {
     }
 
     $startTotal = Get-Date
-    $positionCache = Build-LabelPositionCache -TemplatePath $config.TemplateFile -Mappings $mappings
-    $cacheTime = (Get-Date) - $startTotal
-    Write-Host "  Cache built in $([math]::Round($cacheTime.TotalSeconds, 1))s" -ForegroundColor Cyan
-    Write-Host ""
 
     Write-Host "Starting Word..." -ForegroundColor Cyan
     $word = New-Object -ComObject Word.Application
@@ -448,10 +316,8 @@ try {
             -WordApp $word `
             -TemplatePath $config.TemplateFile `
             -RoomData $room `
-            -Mappings $mappings `
             -OutputPath $outputPath `
-            -RoomCode $roomCode `
-            -PositionCache $positionCache
+            -ValueMap $config.ValueMap
 
         if ($result.Success) {
             $successCount++
@@ -477,7 +343,6 @@ try {
     Write-Host "  Failed: $failCount" -ForegroundColor $(if ($failCount -gt 0) { "Red" } else { "Green" })
     Write-Host ""
     Write-Host "Performance:" -ForegroundColor Yellow
-    Write-Host "  Cache build: $([math]::Round($cacheTime.TotalSeconds, 1))s"
     $perRoom = if ($successCount -gt 0) { [math]::Round($processTime.TotalSeconds / $successCount, 1) } else { 0 }
     Write-Host "  Processing: $([math]::Round($processTime.TotalMinutes, 2)) min ($perRoom s/room)"
     Write-Host "  Total time: $([math]::Round($totalTime.TotalMinutes, 2)) min"

@@ -5,6 +5,8 @@ Output/*
 # Input data (user-specific, keep folder structure)
 Input/*
 !Input/.gitkeep
+!Input/sample-template.docx
+!Input/sample-data.xlsx
 
 # Temporary/one-time files
 temp/
