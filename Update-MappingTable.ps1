@@ -12,13 +12,20 @@
 .PARAMETER ConfigPath
     Path to the configuration file. Defaults to config.psd1 in script directory.
 
+.PARAMETER ShowColumns
+    Lists all available data columns with their mapped/unmapped status.
+
 .EXAMPLE
     .\Update-MappingTable.ps1
+
+.EXAMPLE
+    .\Update-MappingTable.ps1 -ShowColumns
 #>
 
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = ""
+    [string]$ConfigPath = "",
+    [switch]$ShowColumns
 )
 
 $ErrorActionPreference = "Stop"
@@ -214,6 +221,16 @@ try {
     Write-Host "  Removed: $removed" -ForegroundColor $(if ($removed -gt 0) { "Yellow" } else { "Green" })
     Write-Host "  Unmapped: $unmapped" -ForegroundColor $(if ($unmapped -gt 0) { "Yellow" } else { "Green" })
     Write-Host "=" * 60 -ForegroundColor Yellow
+
+    if ($ShowColumns) {
+        Write-Host ""
+        Write-Host "Available data columns ($($excelHeaders.Count) total):" -ForegroundColor Cyan
+        foreach ($col in $excelHeaders) {
+            $isMapped = $updatedMappings | Where-Object { $_.ExcelColumn -eq $col }
+            $status = if ($isMapped) { "[MAPPED]  " } else { "[UNMAPPED]" }
+            Write-Host "  $status $col"
+        }
+    }
 
     if ($unmapped -gt 0) {
         Write-Host ""

@@ -12,6 +12,9 @@ temp/
 # Claude Code
 .claude/
 
+# API credentials
+api-key.txt
+
 # Windows
 Thumbs.db
 Desktop.ini

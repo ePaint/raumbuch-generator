@@ -9,8 +9,14 @@
 .PARAMETER RoomCode
     Process specific room(s) by code. Comma-separated for multiple (e.g., "RT.017,RT.018").
 
+.PARAMETER Source
+    Data source: 'Excel' or 'API'. Overrides config.psd1 setting.
+
 .EXAMPLE
     .\RoomToPDF.ps1
+
+.EXAMPLE
+    .\RoomToPDF.ps1 -Source API
 
 .EXAMPLE
     .\RoomToPDF.ps1 -RoomCode "RT.017"
@@ -22,14 +28,19 @@
 [CmdletBinding()]
 param(
     [string]$ConfigPath = "",
-    [string]$RoomCode = ""
+    [string]$RoomCode = "",
+    [ValidateSet('Excel', 'API')]
+    [string]$Source = ""
 )
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Load-Configuration {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [string]$SourceOverride = ""
+    )
 
     if ([string]::IsNullOrEmpty($Path)) {
         $Path = Join-Path $scriptDir "config.psd1"
@@ -41,13 +52,22 @@ function Load-Configuration {
 
     $config = Import-PowerShellDataFile -Path $Path
 
-    $config.DataFile = Resolve-ConfigPath $config.DataFile
     $config.TemplateFile = Resolve-ConfigPath $config.TemplateFile
-    $config.MappingFile = Resolve-ConfigPath $config.MappingFile
     $config.OutputFolder = Resolve-ConfigPath $config.OutputFolder
 
-    if (-not (Test-Path $config.DataFile)) {
-        throw "Data file not found: $($config.DataFile)"
+    # Parameter overrides config, config defaults to Excel
+    $dataSource = if ($SourceOverride) { $SourceOverride } elseif ($config.DataSource) { $config.DataSource } else { 'Excel' }
+    $config.DataSource = $dataSource
+
+    if ($dataSource -eq 'API') {
+        $config.MappingFile = Resolve-ConfigPath $config.API.MappingFile
+    } else {
+        $config.Excel.DataFile = Resolve-ConfigPath $config.Excel.DataFile
+        $config.MappingFile = Resolve-ConfigPath $config.Excel.MappingFile
+    }
+
+    if ($dataSource -eq 'Excel' -and -not (Test-Path $config.Excel.DataFile)) {
+        throw "Data file not found: $($config.Excel.DataFile)"
     }
     if (-not (Test-Path $config.TemplateFile)) {
         throw "Template file not found: $($config.TemplateFile)"
@@ -73,18 +93,22 @@ function Resolve-ConfigPath {
 }
 
 function Read-MappingTable {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [string]$DataColumnName = 'ExcelColumn'
+    )
 
     $mappings = Import-Excel -Path $Path
     $result = @()
 
     foreach ($row in $mappings) {
-        if ([string]::IsNullOrWhiteSpace($row.ExcelColumn)) {
+        $dataValue = $row.$DataColumnName
+        if ([string]::IsNullOrWhiteSpace($dataValue)) {
             continue
         }
 
         $result += [PSCustomObject]@{
-            ExcelColumn = $row.ExcelColumn.Trim()
+            DataColumn = $dataValue.Trim()
             WordLabel = $row.WordLabel.Trim()
         }
     }
@@ -100,8 +124,48 @@ function Read-RoomData {
     )
 
     $data = Import-Excel -Path $Path
-    Write-Host "Loaded $($data.Count) rooms from data file" -ForegroundColor Cyan
+    Write-Host "Loaded $($data.Count) rooms from Excel file" -ForegroundColor Cyan
     return $data
+}
+
+function Read-RoomDataFromAPI {
+    param(
+        [hashtable]$APIConfig,
+        [string]$ScriptDir
+    )
+
+    $keyPath = $APIConfig.KeyFile
+    if (-not [System.IO.Path]::IsPathRooted($keyPath)) {
+        $keyPath = Join-Path $ScriptDir $keyPath
+    }
+
+    if (-not (Test-Path $keyPath)) {
+        throw "API key file not found: $keyPath"
+    }
+
+    $apiKey = (Get-Content $keyPath -Raw).Trim()
+
+    # Get endpoint URL from file or direct value
+    if ($APIConfig.EndpointFile) {
+        $endpointPath = $APIConfig.EndpointFile
+        if (-not [System.IO.Path]::IsPathRooted($endpointPath)) {
+            $endpointPath = Join-Path $ScriptDir $endpointPath
+        }
+        $endpoint = (Get-Content $endpointPath -Raw).Trim()
+    } else {
+        $endpoint = $APIConfig.Endpoint
+    }
+
+    $headers = @{
+        'Authorization' = "Reference $apiKey"
+        'Accept' = 'application/json'
+    }
+
+    Write-Host "Fetching data from API..." -ForegroundColor Cyan
+    $response = Invoke-RestMethod -Uri $endpoint -Headers $headers
+
+    Write-Host "Loaded $($response.Count) rooms from API" -ForegroundColor Cyan
+    return $response
 }
 
 function Normalize-Text {
@@ -236,7 +300,7 @@ function Process-SingleRoom {
         $doc = $WordApp.Documents.Open($TemplatePath, $false, $true)
 
         foreach ($mapping in $Mappings) {
-            $excelValue = $RoomData.($mapping.ExcelColumn)
+            $excelValue = $RoomData.($mapping.DataColumn)
 
             if ([string]::IsNullOrWhiteSpace($excelValue)) {
                 continue
@@ -308,19 +372,35 @@ try {
     Import-Module ImportExcel
 
     Write-Host "Loading configuration..." -ForegroundColor Cyan
-    $config = Load-Configuration -Path $ConfigPath
-    Write-Host "  Data file: $($config.DataFile)"
+    $config = Load-Configuration -Path $ConfigPath -SourceOverride $Source
+    $dataSource = if ($config.DataSource) { $config.DataSource } else { 'Excel' }
+    Write-Host "  Data source: $dataSource"
+    if ($dataSource -eq 'API') {
+        Write-Host "  API endpoint: (from file)"
+    } else {
+        Write-Host "  Data file: $($config.Excel.DataFile)"
+    }
     Write-Host "  Template: $($config.TemplateFile)"
+    Write-Host "  Mapping: $($config.MappingFile)"
     Write-Host "  Output: $($config.OutputFolder)"
     Write-Host ""
 
-    $mappings = Read-MappingTable -Path $config.MappingFile
-    $roomData = Read-RoomData -Path $config.DataFile -RoomCodeColumn $config.RoomCodeColumn
+    $dataSource = $config.DataSource
+    $dataColumnName = if ($dataSource -eq 'API') { 'APIField' } else { 'ExcelColumn' }
+    $mappings = Read-MappingTable -Path $config.MappingFile -DataColumnName $dataColumnName
+
+    if ($dataSource -eq 'API') {
+        $roomData = Read-RoomDataFromAPI -APIConfig $config.API -ScriptDir $scriptDir
+        $roomCodeField = $config.API.RoomCodeField
+    } else {
+        $roomData = Read-RoomData -Path $config.Excel.DataFile -RoomCodeColumn $config.Excel.RoomCodeColumn
+        $roomCodeField = $config.Excel.RoomCodeColumn
+    }
     Write-Host ""
 
     if (-not [string]::IsNullOrEmpty($RoomCode)) {
         $roomCodes = $RoomCode -split ',' | ForEach-Object { $_.Trim() }
-        $roomData = $roomData | Where-Object { $_.$($config.RoomCodeColumn) -in $roomCodes }
+        $roomData = $roomData | Where-Object { $_.$roomCodeField -in $roomCodes }
         if ($roomData.Count -eq 0) {
             throw "Room(s) not found: $RoomCode"
         }
@@ -352,7 +432,7 @@ try {
 
     foreach ($room in $roomData) {
         $i++
-        $roomCode = $room.$($config.RoomCodeColumn)
+        $roomCode = $room.$roomCodeField
 
         if ([string]::IsNullOrWhiteSpace($roomCode)) {
             $failCount++
