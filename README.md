@@ -1,12 +1,12 @@
 # Raumbuch Generator
 
-Generates PDF specification sheets from room data using Word templates with placeholders.
+Generates PDF specification sheets from room data using Word templates with placeholders. Supports both Excel files and dRofus API as data sources.
 
-## How It Works
+## Features
 
-1. You create a Word template with placeholders like `<<room_func_no>>`, `<<name>>`, `<<programmed_area>>`
-2. The script loads room data from Excel or an API
-3. For each room, it replaces placeholders with actual values and exports to PDF
+- Generate individual PDFs or merge all rooms into a single document
+- Fast OpenXML-based placeholder replacement (~0.6s per room)
+- Support for Excel and dRofus API data sources
 
 ## Requirements
 
@@ -20,34 +20,54 @@ Generates PDF specification sheets from room data using Word templates with plac
 # Install dependency
 Install-Module ImportExcel -Scope CurrentUser
 
-# Run with defaults
+# Generate PDFs for all rooms
 .\RoomToPDF.ps1
+
+# Generate a single merged PDF
+.\RoomToPDF.ps1 -Merge
 
 # Process specific rooms
 .\RoomToPDF.ps1 -RoomCode "RT.001,RT.017"
 
-# Use API instead of Excel
-.\RoomToPDF.ps1 -Source API
-
-# Use a different template
-.\RoomToPDF.ps1 -Template "Input/my-template.docx"
+# Specific rooms merged into one PDF
+.\RoomToPDF.ps1 -RoomCode "RT.001,RT.002,RT.003" -Merge
 ```
 
 ## Project Structure
 
 ```
 raumbuch-generator/
-├── RoomToPDF.ps1           # Main script
-├── config.psd1             # Configuration
-├── api-key.txt             # API key (not in repo)
+├── RoomToPDF.ps1             # Main script
+├── config.psd1               # Configuration
+├── api-key.txt               # API key (not in repo)
+├── api-call.txt              # API endpoint URL (not in repo)
+├── DataDictionary.xlsx       # API field reference (dyn_rfp_* → readable names)
 ├── Input/
-│   ├── sample-template.docx  # Example template
-│   ├── sample-data.xlsx      # Example data
-│   └── ...                   # Your files
+│   ├── Raumbuch_Vorlage_API.docx  # Template with API placeholders
+│   └── ...
 └── Output/
-    └── 2026-04-04_16-00-00/
-        ├── RT.001.pdf
+    └── 2026-04-10_22-28-33/
+        ├── AllRooms_Merged.pdf    # When using -Merge
+        ├── RT.001.pdf             # Individual PDFs
         └── ...
+```
+
+## Command Line Options
+
+| Parameter | Description |
+|-----------|-------------|
+| `-RoomCode` | Process specific room(s), comma-separated |
+| `-Source` | Data source: `Excel` or `API` (overrides config) |
+| `-Template` | Template file path (overrides config) |
+| `-ExcelFile` | Excel data file path (overrides config) |
+| `-ConfigPath` | Use a different config file |
+| `-Merge` | Combine all rooms into a single PDF |
+
+```powershell
+.\RoomToPDF.ps1                                    # All rooms, individual PDFs
+.\RoomToPDF.ps1 -Merge                             # All rooms, single PDF
+.\RoomToPDF.ps1 -RoomCode "RT.001" -Source API     # Single room from API
+.\RoomToPDF.ps1 -RoomCode "RT.001,RT.002" -Merge   # Multiple rooms, merged
 ```
 
 ## Configuration
@@ -56,17 +76,19 @@ Edit `config.psd1`:
 
 ```powershell
 @{
-    TemplateFile = 'Input/template.docx'
+    TemplateFile = 'Input/Raumbuch_Vorlage_API.docx'
     OutputFolder = 'Output'
-    DataSource   = 'Excel'   # or 'API'
+    DataSource   = 'API'    # 'Excel' or 'API'
 
+    # Excel settings (when DataSource = 'Excel')
     Excel = @{
         DataFile       = 'Input/data.xlsx'
         RoomCodeColumn = 'Code'
     }
 
+    # API settings (when DataSource = 'API')
     API = @{
-        EndpointFile  = 'api-endpoint.txt'
+        EndpointFile  = 'api-call.txt'
         KeyFile       = 'api-key.txt'
         RoomCodeField = 'room_func_no'
     }
@@ -81,61 +103,29 @@ Edit `config.psd1`:
 
 ## Template Format
 
-Use `<<fieldname>>` placeholders anywhere in your Word document:
+Use `<<fieldname>>` placeholders anywhere in your Word document. For API integration, use the raw identifiers:
 
 ```
-Room Specification Sheet
-
-Code: <<room_func_no>>
-Name: <<name>>
-Area: <<programmed_area>> m²
-
-Description:
-<<description>>
+<<dyn_rfp_01010201>>    # max. ständige Arbeitsplätze
+<<dyn_rfp_01010401>>    # Tageslicht direkt
 ```
 
-Placeholder names must match the column headers in your Excel file or field names from the API.
+To look up which identifier corresponds to which field, see `DataDictionary.xlsx`.
 
-### Formatting
+### Formatting Notes
 
 - Placeholders can be inside tables, paragraphs, headers, anywhere
 - Text formatting (bold, colors, fonts) is preserved
 - Values are mapped via `ValueMap` in config (e.g., `true` → `ja`)
-- Values over 255 characters are truncated (Word limitation)
+- Values over 255 characters are truncated
 
-## Command Line Options
+## API Setup (dRofus)
 
-| Parameter | Description |
-|-----------|-------------|
-| `-RoomCode` | Process specific room(s), comma-separated |
-| `-Source` | Data source: `Excel` or `API` (overrides config) |
-| `-Template` | Template file path (overrides config) |
-| `-ConfigPath` | Use a different config file |
+1. Create `api-key.txt` with your API key
+2. Create `api-call.txt` with the endpoint URL
+3. Set `DataSource = 'API'` in config.psd1
 
-Examples:
-
-```powershell
-# All rooms from Excel
-.\RoomToPDF.ps1
-
-# Single room from API
-.\RoomToPDF.ps1 -RoomCode "RT.001" -Source API
-
-# Multiple rooms with custom template
-.\RoomToPDF.ps1 -RoomCode "RT.001,RT.002" -Template "Input/simple.docx"
-```
-
-## Data Sources
-
-### Excel
-
-Set `DataSource = 'Excel'` in config. The script reads all columns from the Excel file. Each column header becomes a placeholder name.
-
-### API (dRofus)
-
-Set `DataSource = 'API'` in config. Requires:
-- `api-key.txt` with your API key
-- Endpoint URL in a file (configured via `EndpointFile`)
+Both files should be in the project root directory and contain only the key/URL (no extra whitespace).
 
 ## Output
 
@@ -143,11 +133,19 @@ Each run creates a timestamped folder in `Output/`:
 
 ```
 Output/
-└── 2026-04-04_16-00-00/
-    ├── RT.001.pdf
+└── 2026-04-10_22-28-33/
+    ├── AllRooms_Merged.pdf    # With -Merge flag
+    ├── RT.001.pdf             # Without -Merge
     ├── RT.002.pdf
     └── ...
 ```
+
+## Performance
+
+| Rooms | Time | Per Room |
+|-------|------|----------|
+| 3 | ~4s | 0.9s |
+| 182 | ~107s | 0.6s |
 
 ## Troubleshooting
 
@@ -156,20 +154,17 @@ Output/
 Install-Module ImportExcel -Scope CurrentUser
 ```
 
-**"Template file not found"**
-- Check paths in config.psd1 (relative to script directory)
+**"No <<placeholder>> markers found in template"**
+- Ensure the template has `<<fieldname>>` placeholders
+- For API: use `dyn_rfp_*` identifiers (see DataDictionary.xlsx)
 
 **Placeholder not replaced**
-- Check that placeholder name exactly matches field/column name
-- Placeholder format: `<<fieldname>>` with double angle brackets
+- Ensure placeholder name exactly matches the data field
+- For API: use `dyn_rfp_*` identifiers, not descriptive names
 
 **Word process hangs**
 - End `WINWORD.EXE` in Task Manager
 - The script normally cleans up automatically
-
-## Performance
-
-Typical processing time: 1-3 seconds per room depending on template complexity.
 
 ## License
 

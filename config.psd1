@@ -1,9 +1,9 @@
 @{
-    TemplateFile = 'Input/Raumbuch_Vorlage_alt.docx'
+    TemplateFile = 'Input/Raumbuch_Vorlage_API.docx'
     OutputFolder = 'Output'
 
     # Data source: 'Excel' or 'API'
-    DataSource   = 'Excel'
+    DataSource   = 'API'
 
     # Excel settings (when DataSource = 'Excel')
     Excel = @{
@@ -13,7 +13,7 @@
 
     # API settings (when DataSource = 'API')
     API = @{
-        EndpointFile  = 'temp/addon/API Call.txt'
+        EndpointFile  = 'api-call.txt'
         KeyFile       = 'api-key.txt'
         RoomCodeField = 'room_func_no'
     }

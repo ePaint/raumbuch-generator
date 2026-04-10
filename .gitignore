@@ -14,8 +14,9 @@ temp/
 # Claude Code
 .claude/
 
-# API credentials
+# API credentials and config
 api-key.txt
+api-call.txt
 
 # Windows
 Thumbs.db

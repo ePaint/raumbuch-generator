@@ -32,6 +32,14 @@
 
 .EXAMPLE
     .\RoomToPDF.ps1 -RoomCode "RT.001,RT.017,RT.187"
+
+.EXAMPLE
+    .\RoomToPDF.ps1 -Merge
+    # Combines all rooms into a single PDF file
+
+.EXAMPLE
+    .\RoomToPDF.ps1 -RoomCode "RT.001,RT.017,RT.187" -Merge
+    # Combines specified rooms into a single PDF file
 #>
 
 [CmdletBinding()]
@@ -41,11 +49,15 @@ param(
     [ValidateSet('Excel', 'API')]
     [string]$Source = "",
     [string]$Template = "",
-    [string]$ExcelFile = ""
+    [string]$ExcelFile = "",
+    [switch]$Merge
 )
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Load assembly for OpenXML processing (docx is a zip file)
+Add-Type -AssemblyName System.IO.Compression
 
 function Load-Configuration {
     param(
@@ -159,13 +171,106 @@ function Read-RoomDataFromAPI {
     return $response
 }
 
+function Get-TemplatePlaceholders {
+    param(
+        [object]$WordApp,
+        [string]$TemplatePath
+    )
+
+    $doc = $WordApp.Documents.Open($TemplatePath, $false, $true)
+    $text = $doc.Content.Text
+    $doc.Close($false)
+
+    $placeholders = @()
+    $matches = [regex]::Matches($text, '<<([^>]+)>>')
+    foreach ($m in $matches) {
+        $placeholders += $m.Groups[1].Value
+    }
+
+    return $placeholders | Select-Object -Unique
+}
+
+function Process-RoomWithOpenXML {
+    param(
+        [string]$TemplatePath,
+        [PSCustomObject]$RoomData,
+        [string]$OutputPath,
+        [hashtable]$ValueMap
+    )
+
+    # Copy template to output
+    Copy-Item $TemplatePath $OutputPath -Force
+
+    # Open docx as zip and replace placeholders in XML
+    $zip = [System.IO.Compression.ZipFile]::Open($OutputPath, "Update")
+
+    try {
+        $entry = $zip.GetEntry("word/document.xml")
+        $stream = $entry.Open()
+        $reader = New-Object System.IO.StreamReader($stream)
+        $xml = $reader.ReadToEnd()
+        $reader.Close()
+        $stream.Close()
+
+        # Find all placeholders (XML-encoded angle brackets)
+        $matches = [regex]::Matches($xml, "&lt;&lt;([^&]+)&gt;&gt;")
+
+        foreach ($m in $matches) {
+            $fieldName = $m.Groups[1].Value
+            $placeholder = "&lt;&lt;$fieldName&gt;&gt;"
+            $value = $RoomData.$fieldName
+
+            if ($null -eq $value) {
+                $value = ""
+            } else {
+                $value = $value.ToString()
+            }
+
+            # Apply value map (true/false -> ja/nein)
+            if ($ValueMap -and $ValueMap.Count -gt 0 -and $value.Length -gt 0) {
+                $lowerValue = $value.ToLower()
+                if ($ValueMap.ContainsKey($lowerValue)) {
+                    $value = $ValueMap[$lowerValue]
+                }
+            }
+
+            # XML-escape the value
+            $value = [System.Security.SecurityElement]::Escape($value)
+
+            if ($value.Length -gt 255) {
+                $value = $value.Substring(0, 252) + "..."
+            }
+
+            $xml = $xml.Replace($placeholder, $value)
+        }
+
+        # Write back
+        $entry.Delete()
+        $newEntry = $zip.CreateEntry("word/document.xml")
+        $stream = $newEntry.Open()
+        $writer = New-Object System.IO.StreamWriter($stream)
+        $writer.Write($xml)
+        $writer.Close()
+        $stream.Close()
+
+        return @{ Success = $true; ReplacedCount = $matches.Count }
+    }
+    catch {
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+    finally {
+        $zip.Dispose()
+    }
+}
+
 function Process-SingleRoom {
     param(
         [object]$WordApp,
         [string]$TemplatePath,
         [PSCustomObject]$RoomData,
         [string]$OutputPath,
-        [hashtable]$ValueMap
+        [hashtable]$ValueMap,
+        [array]$PlaceholderNames
     )
 
     $doc = $null
@@ -175,7 +280,14 @@ function Process-SingleRoom {
     try {
         $doc = $WordApp.Documents.Open($TemplatePath, $false, $false)
 
-        foreach ($prop in $RoomData.PSObject.Properties) {
+        # Only replace placeholders that exist in template
+        $propsToReplace = if ($PlaceholderNames -and $PlaceholderNames.Count -gt 0) {
+            $RoomData.PSObject.Properties | Where-Object { $_.Name -in $PlaceholderNames }
+        } else {
+            $RoomData.PSObject.Properties
+        }
+
+        foreach ($prop in $propsToReplace) {
             $placeholder = "<<$($prop.Name)>>"
             $value = if ($null -ne $prop.Value) { $prop.Value.ToString() } else { "" }
 
@@ -211,12 +323,103 @@ function Process-SingleRoom {
     }
     finally {
         if ($null -ne $doc) {
-            $doc.Close([ref]$false)
+            $doc.Close($false)
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null
         }
     }
 
     return @{ Success = $success; ReplacedCount = $replacedCount }
+}
+
+function Process-MergedRooms {
+    param(
+        [object]$WordApp,
+        [string]$TemplatePath,
+        [array]$AllRoomData,
+        [string]$RoomCodeField,
+        [string]$OutputPath,
+        [hashtable]$ValueMap,
+        [array]$PlaceholderNames
+    )
+
+    $successCount = 0
+    $failCount = 0
+    $tempFiles = @()
+
+    try {
+        $totalRooms = $AllRoomData.Count
+        $i = 0
+        $tempFolder = Split-Path $OutputPath
+
+        # Step 1: Generate individual temp files using fast OpenXML replacement
+        foreach ($room in $AllRoomData) {
+            $i++
+            $roomCode = $room.$RoomCodeField
+
+            if ([string]::IsNullOrWhiteSpace($roomCode)) {
+                $failCount++
+                continue
+            }
+
+            Write-Host "[$i/$totalRooms] $roomCode..." -NoNewline
+
+            try {
+                $safeCode = $roomCode -replace '[\\/:*?"<>|]', '_'
+                $tempFile = Join-Path $tempFolder "_temp_$safeCode.docx"
+
+                $result = Process-RoomWithOpenXML `
+                    -TemplatePath $TemplatePath `
+                    -RoomData $room `
+                    -OutputPath $tempFile `
+                    -ValueMap $ValueMap
+
+                if ($result.Success) {
+                    $tempFiles += $tempFile
+                    $successCount++
+                    Write-Host " OK" -ForegroundColor Green
+                } else {
+                    $failCount++
+                    Write-Host " FAILED: $($result.Error)" -ForegroundColor Red
+                }
+            }
+            catch {
+                $failCount++
+                Write-Host " FAILED: $_" -ForegroundColor Red
+            }
+        }
+
+        # Step 2: Merge all temp files into one document
+        if ($tempFiles.Count -gt 0) {
+            Write-Host ""
+            Write-Host "Merging $($tempFiles.Count) documents..." -ForegroundColor Cyan
+
+            $mergedDoc = $WordApp.Documents.Open($tempFiles[0], $false, $false)
+
+            for ($j = 1; $j -lt $tempFiles.Count; $j++) {
+                $range = $mergedDoc.Content
+                $range.Collapse(0)  # wdCollapseEnd
+                $range.InsertBreak(7)  # wdPageBreak
+                $range.InsertFile($tempFiles[$j])
+            }
+
+            Write-Host "Exporting merged PDF..." -ForegroundColor Cyan
+            $mergedDoc.ExportAsFixedFormat($OutputPath, 17)
+            Write-Host "  Saved: $OutputPath" -ForegroundColor Green
+
+            $mergedDoc.Close($false)
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($mergedDoc) | Out-Null
+        }
+    }
+    finally {
+        # Cleanup temp files
+        foreach ($tf in $tempFiles) {
+            if (Test-Path $tf) {
+                Remove-Item $tf -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    return @{ SuccessCount = $successCount; FailCount = $failCount }
 }
 
 function Release-ComObjects {
@@ -287,47 +490,81 @@ try {
     $word.Visible = $false
     $word.DisplayAlerts = 0
 
+    # Pre-scan template for placeholders (optimization: only replace what exists)
+    Write-Host "Scanning template for placeholders..." -ForegroundColor Cyan
+    $templatePlaceholders = Get-TemplatePlaceholders -WordApp $word -TemplatePath $config.TemplateFile
+    if ($templatePlaceholders.Count -eq 0) {
+        Write-Host "  WARNING: No <<placeholder>> markers found in template!" -ForegroundColor Yellow
+        Write-Host "  Will try replacing all data columns (slower)" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Found $($templatePlaceholders.Count) placeholders" -ForegroundColor Green
+    }
+
     $totalRooms = @($roomData).Count
     $successCount = 0
     $failCount = 0
-    $i = 0
 
     Write-Host ""
-    Write-Host "Processing $totalRooms rooms..." -ForegroundColor Yellow
+    if ($Merge) {
+        Write-Host "Processing $totalRooms rooms (MERGED OUTPUT)..." -ForegroundColor Yellow
+    } else {
+        Write-Host "Processing $totalRooms rooms..." -ForegroundColor Yellow
+    }
     Write-Host "-" * 60 -ForegroundColor Yellow
 
     $startProcess = Get-Date
 
-    foreach ($room in $roomData) {
-        $i++
-        $roomCode = $room.$roomCodeField
+    if ($Merge) {
+        # Merged mode: combine all rooms into single PDF
+        $mergedOutputPath = Join-Path $config.OutputFolder "AllRooms_Merged.pdf"
 
-        if ([string]::IsNullOrWhiteSpace($roomCode)) {
-            $failCount++
-            continue
-        }
-
-        $safeRoomCode = $roomCode -replace '[\\/:*?"<>|]', '_'
-        $outputPath = Join-Path $config.OutputFolder "$safeRoomCode.pdf"
-
-        Write-Host "[$i/$totalRooms] $roomCode..." -NoNewline
-
-        $result = Process-SingleRoom `
+        $result = Process-MergedRooms `
             -WordApp $word `
             -TemplatePath $config.TemplateFile `
-            -RoomData $room `
-            -OutputPath $outputPath `
-            -ValueMap $config.ValueMap
+            -AllRoomData $roomData `
+            -RoomCodeField $roomCodeField `
+            -OutputPath $mergedOutputPath `
+            -ValueMap $config.ValueMap `
+            -PlaceholderNames $templatePlaceholders
 
-        if ($result.Success) {
-            $successCount++
-            Write-Host " OK" -ForegroundColor Green
-        }
-        else {
-            $failCount++
-            Write-Host " FAILED" -ForegroundColor Red
-            foreach ($w in $result.Warnings) {
-                Write-Host "    $w" -ForegroundColor Red
+        $successCount = $result.SuccessCount
+        $failCount = $result.FailCount
+    }
+    else {
+        # Individual mode: separate PDF per room
+        $i = 0
+        foreach ($room in $roomData) {
+            $i++
+            $roomCode = $room.$roomCodeField
+
+            if ([string]::IsNullOrWhiteSpace($roomCode)) {
+                $failCount++
+                continue
+            }
+
+            $safeRoomCode = $roomCode -replace '[\\/:*?"<>|]', '_'
+            $outputPath = Join-Path $config.OutputFolder "$safeRoomCode.pdf"
+
+            Write-Host "[$i/$totalRooms] $roomCode..." -NoNewline
+
+            $result = Process-SingleRoom `
+                -WordApp $word `
+                -TemplatePath $config.TemplateFile `
+                -RoomData $room `
+                -OutputPath $outputPath `
+                -ValueMap $config.ValueMap `
+                -PlaceholderNames $templatePlaceholders
+
+            if ($result.Success) {
+                $successCount++
+                Write-Host " OK" -ForegroundColor Green
+            }
+            else {
+                $failCount++
+                Write-Host " FAILED" -ForegroundColor Red
+                foreach ($w in $result.Warnings) {
+                    Write-Host "    $w" -ForegroundColor Red
+                }
             }
         }
     }
@@ -341,6 +578,11 @@ try {
     Write-Host "  Total rooms: $totalRooms"
     Write-Host "  Successful: $successCount" -ForegroundColor Green
     Write-Host "  Failed: $failCount" -ForegroundColor $(if ($failCount -gt 0) { "Red" } else { "Green" })
+    if ($Merge) {
+        Write-Host "  Output mode: MERGED (single PDF)"
+    } else {
+        Write-Host "  Output mode: Individual PDFs"
+    }
     Write-Host ""
     Write-Host "Performance:" -ForegroundColor Yellow
     $perRoom = if ($successCount -gt 0) { [math]::Round($processTime.TotalSeconds / $successCount, 1) } else { 0 }
