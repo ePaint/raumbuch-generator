@@ -56,8 +56,9 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-# Load assembly for OpenXML processing (docx is a zip file)
+# Load assemblies for OpenXML processing (docx is a zip file)
 Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Load-Configuration {
     param(
@@ -276,45 +277,27 @@ function Process-SingleRoom {
     $doc = $null
     $success = $false
     $replacedCount = 0
+    $tempFile = $null
 
     try {
-        $doc = $WordApp.Documents.Open($TemplatePath, $false, $false)
+        $outputDir = Split-Path $OutputPath
+        $baseName = [System.IO.Path]::GetFileNameWithoutExtension($OutputPath)
+        $tempFile = Join-Path $outputDir "_temp_$baseName.docx"
 
-        # Only replace placeholders that exist in template
-        $propsToReplace = if ($PlaceholderNames -and $PlaceholderNames.Count -gt 0) {
-            $RoomData.PSObject.Properties | Where-Object { $_.Name -in $PlaceholderNames }
-        } else {
-            $RoomData.PSObject.Properties
+        $result = Process-RoomWithOpenXML `
+            -TemplatePath $TemplatePath `
+            -RoomData $RoomData `
+            -OutputPath $tempFile `
+            -ValueMap $ValueMap
+
+        if (-not $result.Success) {
+            Write-Host " Error: $($result.Error)" -ForegroundColor Red
+            return @{ Success = $false; ReplacedCount = 0 }
         }
 
-        foreach ($prop in $propsToReplace) {
-            $placeholder = "<<$($prop.Name)>>"
-            $value = if ($null -ne $prop.Value) { $prop.Value.ToString() } else { "" }
+        $replacedCount = $result.ReplacedCount
 
-            if ([string]::IsNullOrWhiteSpace($value)) {
-                $value = ""
-            }
-
-            if ($ValueMap -and $ValueMap.Count -gt 0 -and $value.Length -gt 0) {
-                $lowerValue = $value.ToLower()
-                if ($ValueMap.ContainsKey($lowerValue)) {
-                    $value = $ValueMap[$lowerValue]
-                }
-            }
-
-            if ($value.Length -gt 255) {
-                $value = $value.Substring(0, 252) + "..."
-            }
-
-            $find = $doc.Content.Find
-            $find.ClearFormatting()
-            $find.Replacement.ClearFormatting()
-
-            if ($find.Execute($placeholder, $false, $false, $false, $false, $false, $true, 1, $false, $value, 2)) {
-                $replacedCount++
-            }
-        }
-
+        $doc = $WordApp.Documents.Open($tempFile, $false, $false)
         $doc.ExportAsFixedFormat($OutputPath, 17)
         $success = $true
     }
@@ -325,6 +308,9 @@ function Process-SingleRoom {
         if ($null -ne $doc) {
             $doc.Close($false)
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($doc) | Out-Null
+        }
+        if ($tempFile -and (Test-Path $tempFile)) {
+            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
         }
     }
 
@@ -495,7 +481,7 @@ try {
     $templatePlaceholders = Get-TemplatePlaceholders -WordApp $word -TemplatePath $config.TemplateFile
     if ($templatePlaceholders.Count -eq 0) {
         Write-Host "  WARNING: No <<placeholder>> markers found in template!" -ForegroundColor Yellow
-        Write-Host "  Will try replacing all data columns (slower)" -ForegroundColor Yellow
+        Write-Host "  Output PDFs will be identical copies of the template." -ForegroundColor Yellow
     } else {
         Write-Host "  Found $($templatePlaceholders.Count) placeholders" -ForegroundColor Green
     }
