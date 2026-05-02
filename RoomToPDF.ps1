@@ -191,6 +191,26 @@ function Get-TemplatePlaceholders {
     return $placeholders | Select-Object -Unique
 }
 
+function Invoke-WithRetry {
+    param(
+        [scriptblock]$Action,
+        [int]$MaxAttempts = 5,
+        [int]$InitialDelayMs = 100
+    )
+
+    $attempt = 0
+    while ($true) {
+        try {
+            return & $Action
+        }
+        catch {
+            $attempt++
+            if ($attempt -ge $MaxAttempts) { throw }
+            Start-Sleep -Milliseconds ($InitialDelayMs * $attempt)
+        }
+    }
+}
+
 function Process-RoomWithOpenXML {
     param(
         [string]$TemplatePath,
@@ -203,7 +223,8 @@ function Process-RoomWithOpenXML {
     Copy-Item $TemplatePath $OutputPath -Force
 
     # Open docx as zip and replace placeholders in XML
-    $zip = [System.IO.Compression.ZipFile]::Open($OutputPath, "Update")
+    # Retry handles transient file locks (antivirus scan, NTFS handle release lag)
+    $zip = Invoke-WithRetry { [System.IO.Compression.ZipFile]::Open($OutputPath, "Update") }
 
     try {
         $entry = $zip.GetEntry("word/document.xml")
@@ -297,7 +318,7 @@ function Process-SingleRoom {
 
         $replacedCount = $result.ReplacedCount
 
-        $doc = $WordApp.Documents.Open($tempFile, $false, $false)
+        $doc = Invoke-WithRetry { $WordApp.Documents.Open($tempFile, $false, $false) }
         $doc.ExportAsFixedFormat($OutputPath, 17)
         $success = $true
     }
@@ -379,13 +400,15 @@ function Process-MergedRooms {
             Write-Host ""
             Write-Host "Merging $($tempFiles.Count) documents..." -ForegroundColor Cyan
 
-            $mergedDoc = $WordApp.Documents.Open($tempFiles[0], $false, $false)
+            $firstFile = $tempFiles[0]
+            $mergedDoc = Invoke-WithRetry { $WordApp.Documents.Open($firstFile, $false, $false) }
 
             for ($j = 1; $j -lt $tempFiles.Count; $j++) {
                 $range = $mergedDoc.Content
                 $range.Collapse(0)  # wdCollapseEnd
                 $range.InsertBreak(7)  # wdPageBreak
-                $range.InsertFile($tempFiles[$j])
+                $nextFile = $tempFiles[$j]
+                Invoke-WithRetry { $range.InsertFile($nextFile) } | Out-Null
             }
 
             Write-Host "Exporting merged PDF..." -ForegroundColor Cyan
